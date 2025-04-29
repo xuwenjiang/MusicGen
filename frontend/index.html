@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MusicGen UX App</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="libs/recorder.js"></script>
+</head>
+<body>
+  <h1>MusicGen UX App</h1>
+  <div id="app">
+    <textarea id="description" placeholder="Enter a description (e.g. ‘rock cello’)"></textarea>
+    <div>
+      <button id="record-btn">🎙️ Start Recording</button>
+      <button id="stop-btn" disabled>⏹️ Stop Recording</button>
+      <button id="generate-btn" disabled>🎵 Generate Music</button>
+    </div>
+
+    <div>
+      <label for="file-upload">Upload MP3/WAV:</label>
+      <input type="file" id="file-upload" accept=".mp3,.wav" />
+    </div>
+
+    <div>
+      <label for="duration">Audio Length (seconds):</label>
+      <input type="number" id="duration" value="5" min="1" max="30" />
+    </div>
+
+    <!-- 新增：用于播放用户录制的原始声音 -->
+    <div id="input-player-container">
+      <p>Your Recording:</p>
+      <audio id="input-player" controls></audio>
+    </div>
+
+    <div style="margin-top:20px;">
+      <p>Generated Music:</p>
+      <audio id="audio-player" controls></audio>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

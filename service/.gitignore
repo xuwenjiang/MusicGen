@@ -1,0 +1,23 @@
+# Python 缓存文件
+__pycache__/
+*.pyc
+*.pyo
+
+# 虚拟环境
+venv/
+env/
+
+# 临时文件
+*.tmp
+*.log
+*.wav
+*.mp3
+
+# 上传目录
+uploads/
+
+# Node.js 依赖
+node_modules/
+
+# VSCode 配置
+.vscode/
