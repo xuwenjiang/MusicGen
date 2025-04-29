@@ -56,7 +56,7 @@ pip install -e .
 From the project root:
 
 ```powershell
-cd ../service
+cd service
 pip install fastapi uvicorn librosa pydub soundfile
 conda install -c conda-forge ffmpeg -y
 ```
