@@ -57,8 +57,22 @@ From the project root:
 
 ```powershell
 cd service
-pip install fastapi uvicorn librosa pydub soundfile
+# FastAPI + core audio libraries
+pip install fastapi uvicorn python-multipart aiofiles librosa pydub soundfile
+# FFmpeg (for any on-the-fly conversions)
 conda install -c conda-forge ffmpeg -y
+
+# CLAP + FAISS pre-indexed search ===
+# If you only need CPU search: (on Windows use it)
+conda install -c conda-forge faiss-cpu -y
+# Or, for GPU-accelerated search (not available on Windows):
+conda install -c conda-forge faiss-gpu cudatoolkit=12.1 -y
+
+# Sentence-Transformers (provides the CLAP model)
+pip install sentence-transformers
+
+# You need to login huggingface and copy your huggingface token 
+huggingface-cli login
 ```
 
 ## 5. Install frontend dependencies
@@ -71,9 +85,13 @@ No install needed—frontend is pure HTML/JS. Ensure you have downloaded `Record
 MusicGen/
 ├── audiocraft/       # MusicGen model code (AudioCraft)
 ├── service/          # FastAPI backend
+|   ├── preloaded/    # Sample WAV files for testing
+│   ├── scripts/      # Scripts
 │   ├── app.py
 │   ├── model_handler.py
-│   └── audio_utils.py
+│   ├── audio_utils.py
+│   ├── sim_utils.py  # CLAP + FAISS search
+│   └── requirements.txt
 └── frontend/         # Web UI
     ├── index.html
     ├── style.css

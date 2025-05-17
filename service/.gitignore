@@ -8,10 +8,7 @@ venv/
 env/
 
 # 临时文件
-*.tmp
-*.log
-*.wav
-*.mp3
+audio_index.faiss
 
 # 上传目录
 uploads/

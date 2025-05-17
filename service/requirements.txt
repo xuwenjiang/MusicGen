@@ -1,2 +1,5 @@
 fastapi
 uvicorn
+python-multipart    # 支持 form-data 上传
+aiofiles            # FileResponse 辅助
+sentence-transformers  # CLAP embedding 用
