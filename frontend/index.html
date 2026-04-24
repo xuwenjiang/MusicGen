@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MusicGen 控制台</title>
-    <link rel="stylesheet" href="style.css?v=20260328b" />
+    <link rel="stylesheet" href="style.css?v=20260424b" />
     <script src="libs/recorder.js"></script>
   </head>
   <body>
@@ -181,9 +181,63 @@
             <audio id="audio-player" controls></audio>
           </article>
         </section>
+
+        <section class="workflow-stack">
+          <article class="result-card tagging-card">
+            <div class="card-head">
+              <p class="card-kicker">区域 5</p>
+              <h2>CLAP Tagging Alpha</h2>
+              <p>
+                这里负责用 CLAP 给当前音频输入打标签。你可以先维护可用 tags，再设置阈值和返回数量，然后分析当前音频。
+              </p>
+            </div>
+
+            <div class="tagging-grid">
+              <div class="tagging-panel">
+                <div class="result-head">
+                  <h3>Available tags</h3>
+                  <span class="result-caption">这些标签会写回本地文件并持续保留</span>
+                </div>
+
+                <div class="field-row tag-parameter-grid">
+                  <label class="field-stack" for="tag-threshold">
+                    <span>阈值 threshold</span>
+                    <input type="number" id="tag-threshold" value="0.25" min="-1" max="1" step="0.01" />
+                  </label>
+                  <label class="field-stack" for="tag-top-k">
+                    <span>返回数量 top-k</span>
+                    <input type="number" id="tag-top-k" value="8" min="1" max="50" step="1" />
+                  </label>
+                </div>
+
+                <div class="button-group maintenance-actions">
+                  <button id="save-tags-btn" type="button">保存可用 tags</button>
+                  <button id="analyze-tags-btn" type="button" disabled>分析当前音频</button>
+                </div>
+
+                <div id="tag-status" class="status-banner status-idle">
+                  正在准备可用 tags。
+                </div>
+
+                <div id="tag-editor-list" class="tag-editor-list"></div>
+              </div>
+
+              <div class="tagging-panel tag-results-panel">
+                <div class="result-head">
+                  <h3>标签结果</h3>
+                  <span class="result-caption">命中的标签会带上 score</span>
+                </div>
+                <div id="tag-results-empty" class="status-banner status-idle">
+                  准备好音频后，就可以试试 CLAP 的标签判断效果。
+                </div>
+                <div id="tag-results-list" class="tag-results-list"></div>
+              </div>
+            </div>
+          </article>
+        </section>
       </main>
     </div>
 
-    <script src="app.js?v=20260328b"></script>
+    <script src="app.js?v=20260424c"></script>
   </body>
 </html>

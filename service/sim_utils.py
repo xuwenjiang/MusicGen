@@ -8,6 +8,7 @@ import json
 from transformers import ClapProcessor, ClapModel
 from pathlib import Path
 import torch
+from typing import Union
 
 from logging_utils import get_logger
 
@@ -39,6 +40,11 @@ def _embed_wave(wav: np.ndarray, sr: int) -> np.ndarray:
     3) 移到 model.device，然后 no_grad 推理
     4) 返回 feats[0]（batch size=1）的 numpy 向量
     """
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+
+    wav = np.asarray(wav, dtype=np.float32)
+
     # 1) 重采样
     if sr != TARGET_SR:
         wav = librosa.resample(wav, orig_sr=sr, target_sr=TARGET_SR)
@@ -59,6 +65,81 @@ def _embed_wave(wav: np.ndarray, sr: int) -> np.ndarray:
         feats = model.get_audio_features(**inputs)  # (batch, dim)
     emb = feats[0].cpu().numpy().astype("float32")
     return emb
+
+
+# ---------------------------------------------------------------------
+# 2. 文本编码与向量归一化（给 tag 文本做 embedding）
+# ---------------------------------------------------------------------
+def _embed_texts(texts: list[str]) -> np.ndarray:
+    """
+    将一组标签文本编码成 CLAP text embeddings。
+    """
+    inputs = processor(
+        text=texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    )
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        feats = model.get_text_features(**inputs)
+    return feats.cpu().numpy().astype("float32")
+
+
+def _normalize_rows(matrix: np.ndarray) -> np.ndarray:
+    """
+    对每一行向量做 L2 归一化，便于后续计算 cosine similarity。
+    """
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms = np.clip(norms, a_min=1e-12, a_max=None)
+    return matrix / norms
+
+
+# ---------------------------------------------------------------------
+# 3. 音频标签打分（音频 embedding vs tag text embeddings）
+# ---------------------------------------------------------------------
+def score_audio_tags(
+    query_path: str,
+    tags: list[str],
+    threshold: float = 0.0,
+    top_k: int = 10,
+) -> list[dict[str, Union[float, str]]]:
+    """
+    对单个音频文件与一组候选 tag 做相似度打分，并返回过滤后的 top 结果。
+    """
+    logger.info(
+        "[STEP] score_audio_tags.start query_path=%s tags=%s threshold=%.3f top_k=%s",
+        query_path,
+        len(tags),
+        threshold,
+        top_k,
+    )
+
+    wav, sr = librosa.load(query_path, sr=None, mono=True)
+    audio_emb = _normalize_rows(_embed_wave(wav, sr)[None, :])
+    text_embs = _normalize_rows(_embed_texts(tags))
+    scores = np.matmul(text_embs, audio_emb[0])
+
+    ranked_indices = np.argsort(scores)[::-1]
+    results: list[dict[str, Union[float, str]]] = []
+
+    for idx in ranked_indices:
+        score = float(scores[idx])
+        if score < threshold:
+            continue
+
+        results.append({
+            "id": tags[idx].lower().replace(" ", "-"),
+            "label": tags[idx],
+            "score": round(score, 4),
+        })
+
+        if len(results) >= top_k:
+            break
+
+    logger.info("[STEP] score_audio_tags.end matches=%s", len(results))
+    return results
 
 
 def build_index(preload_dir: str, index_path: str = "audio_index.faiss") -> list[str]:
@@ -238,7 +319,7 @@ def query_slices_from_index(
         else:
             clip = wav[start_sample:end_sample]
 
-        emb = _embed_clip(clip, sr)
+        emb = _embed_wave(clip, sr)
         all_query_embs.append(emb)
         clip_infos.append((start_time_sec, window_size))
 

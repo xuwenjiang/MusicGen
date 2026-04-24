@@ -1,18 +1,22 @@
 # service/app.py
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-
-import time
+import json
 import tempfile
+import time
 import asyncio
 import uuid
 from pathlib import Path
 
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict, List, Optional
+
 from logging_utils import configure_logging, get_logger, log_params, reset_request_id, set_request_id
 from model_handler import generate_audio
-from sim_utils import build_index, find_similar, build_slice_index
+from sim_utils import build_index, find_similar, build_slice_index, score_audio_tags
+from tag_store import flatten_categories, load_tag_config, load_tags, normalize_tags, save_tag_config
 
 # ---------- 初始化 FastAPI ----------
 app = FastAPI()
@@ -41,6 +45,11 @@ SLICE_WINDOW_SIZE = 1.0                             # 切片窗口大小（秒�
 SLICE_HOP_SIZE = 0.5                                # 切片帧移大小（秒）
 
 
+class TagsPayload(BaseModel):
+    categories: Dict[str, List[str]]
+
+
+# ---------- 通用上传辅助 ----------
 async def save_upload(audio_file: UploadFile) -> Path:
     filename = audio_file.filename or f"upload-{int(time.time() * 1000)}.wav"
     tmp_path = UPLOAD_DIR / filename
@@ -53,6 +62,108 @@ async def save_upload(audio_file: UploadFile) -> Path:
         filename,
     )
     return tmp_path
+
+
+# ---------- Tag 参数解析 ----------
+def parse_tags_payload(tags_payload: Optional[str]) -> list[str]:
+    if not tags_payload:
+        return load_tags()
+
+    try:
+        decoded = json.loads(tags_payload)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="tags 不是合法 JSON") from exc
+
+    if not isinstance(decoded, list):
+        raise HTTPException(status_code=400, detail="tags 必须是字符串数组")
+
+    try:
+        return normalize_tags(str(tag) for tag in decoded)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------- Tags 配置读取接口 ----------
+@app.get("/tags")
+async def get_tags():
+    tag_config = load_tag_config()
+    categories = tag_config["categories"]
+    tags = flatten_categories(categories)
+    log_params(logger, category_count=len(categories), tag_count=len(tags))
+    return {
+        "version": tag_config["version"],
+        "categories": categories,
+        "count": len(tags),
+    }
+
+
+# ---------- Tags 配置保存接口 ----------
+@app.post("/tags")
+async def update_tags(payload: TagsPayload):
+    try:
+        tag_config = save_tag_config(payload.categories)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    categories = tag_config["categories"]
+    tags = flatten_categories(categories)
+    logger.info("[STEP] tags.saved category_count=%s count=%s", len(categories), len(tags))
+    return {
+        "version": tag_config["version"],
+        "categories": categories,
+        "count": len(tags),
+    }
+
+
+# ---------- CLAP Tag 分析接口 ----------
+@app.post("/analyze_tags")
+async def analyze_tags(
+    audio_file: UploadFile = File(...),
+    tags: str = Form(""),
+    threshold: float = Form(0.25),
+    top_k: int = Form(10),
+):
+    if threshold < -1 or threshold > 1:
+        raise HTTPException(status_code=400, detail="threshold 必须在 -1 到 1 之间")
+    if top_k < 1:
+        raise HTTPException(status_code=400, detail="top_k 必须大于 0")
+
+    parsed_tags = parse_tags_payload(tags)
+    log_params(
+        logger,
+        audio_file=audio_file.filename if audio_file else None,
+        threshold=threshold,
+        top_k=top_k,
+        tag_count=len(parsed_tags),
+    )
+
+    tmp_path = await save_upload(audio_file)
+
+    try:
+        results = score_audio_tags(
+            query_path=str(tmp_path),
+            tags=parsed_tags,
+            threshold=threshold,
+            top_k=top_k,
+        )
+    except Exception as exc:
+        logger.exception("[ERROR] analyze_tags.failed error=%s", exc)
+        raise HTTPException(status_code=500, detail="标签分析失败") from exc
+
+    for rank, result in enumerate(results, start=1):
+        logger.info(
+            "[RESULT] rank=%s tag=%s score=%.4f",
+            rank,
+            result["label"],
+            result["score"],
+        )
+
+    return {
+        "results": results,
+        "threshold": threshold,
+        "top_k": top_k,
+        "tag_count": len(parsed_tags),
+    }
 
 
 @app.middleware("http")

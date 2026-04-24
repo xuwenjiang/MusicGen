@@ -155,7 +155,7 @@ In a `musicgen` shell:
 
 ```powershell
 cd frontend
-http-server -p 8080
+python -m http.server 8080
 ```
 
 # Usage Example

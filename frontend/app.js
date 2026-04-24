@@ -42,6 +42,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const silenceThresholdDisplay = document.getElementById("silence-threshold-display");
   const silenceDurationDisplay = document.getElementById("silence-duration-display");
   const maxSegmentMsDisplay = document.getElementById("max-segment-ms-display");
+  const saveTagsBtn = document.getElementById("save-tags-btn");
+  const analyzeTagsBtn = document.getElementById("analyze-tags-btn");
+  const tagThresholdInput = document.getElementById("tag-threshold");
+  const tagTopKInput = document.getElementById("tag-top-k");
+  const tagStatus = document.getElementById("tag-status");
+  const tagEditorList = document.getElementById("tag-editor-list");
+  const tagResultsEmpty = document.getElementById("tag-results-empty");
+  const tagResultsList = document.getElementById("tag-results-list");
 
   let loopStream = null;
   let loopAudioContext = null;
@@ -51,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let wasSpeaking = false;
   let segmentStartTime = null;
   let silentSince = null;
+  let tagCategories = {};
 
   desc.addEventListener("input", refreshActionAvailability);
 
@@ -320,14 +329,21 @@ document.addEventListener("DOMContentLoaded", () => {
     setStatus(appStatus, "idle", "试验区已经停止。", true);
   });
 
+  saveTagsBtn.addEventListener("click", saveAvailableTags);
+  analyzeTagsBtn.addEventListener("click", analyzeCurrentAudioTags);
+
   refreshActionAvailability();
+  renderTagResults();
+  void initializeTagging();
 
   function refreshActionAvailability() {
     const hasPrompt = Boolean(getEffectivePrompt());
     const hasSourceAudio = Boolean(sourceAudio);
+    const hasTags = collectCurrentTags().length > 0;
 
     genBtn.disabled = !hasPrompt || !hasSourceAudio;
     findBtn.disabled = !hasSourceAudio;
+    analyzeTagsBtn.disabled = !hasSourceAudio || !hasTags;
 
     if (!hasSourceAudio) {
       if (!isPinned(audioStatus)) {
@@ -351,6 +367,12 @@ document.addEventListener("DOMContentLoaded", () => {
       setStatus(generateStatus, "idle", "将使用默认示例提示词生成新音频。", true);
     } else if (hasPrompt && hasSourceAudio && !isPinned(generateStatus)) {
       setStatus(generateStatus, "idle", "文本提示和音频输入都准备好了，可以开始生成。", true);
+    }
+
+    if (!hasTags && !isPinned(tagStatus)) {
+      setStatus(tagStatus, "idle", "先准备一批可用 tags，才能开始做 CLAP 标签分析。", true);
+    } else if (!hasSourceAudio && !isPinned(tagStatus)) {
+      setStatus(tagStatus, "idle", "可用 tags 已准备好。上传或录音后就可以分析当前音频。", true);
     }
   }
 
@@ -388,6 +410,269 @@ document.addEventListener("DOMContentLoaded", () => {
     sourceCaption.textContent = "尚未准备";
     inputPlayer.removeAttribute("src");
     inputPlayer.load();
+  }
+
+  async function initializeTagging() {
+    setStatus(tagStatus, "busy", "正在加载可用 tags。", true);
+
+    try {
+      const response = await fetchJson("/tags", 30000);
+      tagCategories = normalizeCategoryMap(response.categories);
+      renderTagEditor();
+      refreshActionAvailability();
+      setStatus(tagStatus, "success", `已加载 ${collectCategoryCount()} 个分类、${collectCurrentTags().length} 个可用 tags。可以继续编辑，或直接分析当前音频。`, true);
+    } catch (error) {
+      setStatus(tagStatus, "error", error.message || "可用 tags 加载失败。", true);
+      console.error("load tags error:", error);
+    }
+  }
+
+  function renderTagEditor() {
+    tagEditorList.innerHTML = "";
+
+    const entries = Object.entries(tagCategories);
+
+    if (!entries.length) {
+      const emptyNote = document.createElement("p");
+      emptyNote.className = "empty-note";
+      emptyNote.textContent = "当前还没有可用 tags 分类。请先检查本地配置文件。";
+      tagEditorList.appendChild(emptyNote);
+      return;
+    }
+
+    entries.forEach(([categoryName, tags]) => {
+      const section = document.createElement("section");
+      section.className = "tag-category";
+
+      const head = document.createElement("div");
+      head.className = "tag-category-head";
+
+      const title = document.createElement("h4");
+      title.className = "tag-category-title";
+      title.textContent = categoryName;
+
+      const count = document.createElement("span");
+      count.className = "tag-category-count";
+      count.textContent = `${tags.length} tags`;
+
+      head.appendChild(title);
+      head.appendChild(count);
+      section.appendChild(head);
+
+      const list = document.createElement("div");
+      list.className = "tag-chip-list";
+
+      tags.forEach((tag, index) => {
+        list.appendChild(createTagChip(categoryName, index, tag));
+      });
+
+      list.appendChild(createTagAddChip(categoryName));
+      section.appendChild(list);
+      tagEditorList.appendChild(section);
+    });
+  }
+
+  function createTagChip(categoryName, index, tag) {
+    const chip = document.createElement("div");
+    chip.className = "tag-chip";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "tag-chip-input";
+    input.value = tag;
+    input.size = Math.max(tag.length + 1, 8);
+    input.addEventListener("input", (event) => {
+      const value = event.target.value;
+      tagCategories[categoryName][index] = value;
+      event.target.size = Math.max(value.length + 1, 8);
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "tag-chip-remove";
+    removeBtn.textContent = "×";
+    removeBtn.title = "删除这个 tag";
+    removeBtn.addEventListener("click", () => {
+      tagCategories[categoryName].splice(index, 1);
+      renderTagEditor();
+      refreshActionAvailability();
+    });
+
+    chip.appendChild(input);
+    chip.appendChild(removeBtn);
+    return chip;
+  }
+
+  function createTagAddChip(categoryName) {
+    const chip = document.createElement("div");
+    chip.className = "tag-chip tag-chip-add";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "tag-chip-add-input";
+    input.placeholder = `回车添加 ${categoryName} tag`;
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+
+      event.preventDefault();
+      const nextTag = normalizeTagText(event.target.value);
+      if (!nextTag) {
+        return;
+      }
+
+      if (hasDuplicateTag(nextTag, categoryName)) {
+        setStatus(tagStatus, "error", `tag 已存在：${nextTag}`, true);
+        return;
+      }
+
+      tagCategories[categoryName].push(nextTag);
+      renderTagEditor();
+      refreshActionAvailability();
+      setStatus(tagStatus, "success", `已在 ${categoryName} 下添加 tag：${nextTag}。记得保存。`, true);
+    });
+
+    chip.appendChild(input);
+    return chip;
+  }
+
+  function hasDuplicateTag(nextTag, categoryName) {
+    return tagCategories[categoryName].some(
+      (tag) => normalizeTagText(tag).localeCompare(nextTag, undefined, { sensitivity: "accent" }) === 0,
+    );
+  }
+
+  async function saveAvailableTags() {
+    setButtonBusy(saveTagsBtn, true, "保存中...");
+
+    try {
+      const response = await postJson("/tags", { categories: collectCurrentCategories() }, 30000);
+      tagCategories = normalizeCategoryMap(response.categories);
+      renderTagEditor();
+      refreshActionAvailability();
+      setStatus(tagStatus, "success", `已保存 ${collectCategoryCount()} 个分类、${collectCurrentTags().length} 个 tags。`, true);
+    } catch (error) {
+      setStatus(tagStatus, "error", error.message || "保存可用 tags 失败。", true);
+      console.error("save tags error:", error);
+    } finally {
+      setButtonBusy(saveTagsBtn, false);
+    }
+  }
+
+  async function analyzeCurrentAudioTags() {
+    if (!sourceAudio) {
+      setStatus(tagStatus, "error", "要先在上面的区域准备一份音频输入，才能分析标签。", true);
+      return;
+    }
+
+    const tags = collectCurrentTags();
+    if (!tags.length) {
+      setStatus(tagStatus, "error", "当前没有可用 tags。请先添加并保存。", true);
+      return;
+    }
+
+    const threshold = parseFloat(tagThresholdInput.value);
+    const topK = parseInt(tagTopKInput.value, 10);
+    const formData = new FormData();
+    formData.append("audio_file", sourceAudio, normalizeSourceFilename(sourceAudioName));
+    formData.append("tags", JSON.stringify(tags));
+    formData.append("threshold", String(Number.isFinite(threshold) ? threshold : 0.25));
+    formData.append("top_k", String(Number.isFinite(topK) && topK > 0 ? topK : 8));
+
+    setButtonBusy(analyzeTagsBtn, true, "分析中...");
+    setStatus(tagStatus, "busy", "正在用 CLAP 给当前音频打标签。", true);
+    setStatus(appStatus, "busy", "CLAP 标签分析正在执行。", true);
+
+    try {
+      const response = await postForJson("/analyze_tags", formData, 120000);
+      renderTagResults(response.results || [], "当前阈值下没有命中的 tags。你可以降低 threshold，或者补充更贴切的 tags。");
+      setStatus(tagStatus, "success", `标签分析完成，共返回 ${(response.results || []).length} 个命中。`, true);
+      setStatus(appStatus, "success", "CLAP 标签分析已经返回结果。", true);
+    } catch (error) {
+      renderTagResults();
+      setStatus(tagStatus, "error", error.message || "标签分析失败。", true);
+      setStatus(appStatus, "error", "CLAP 标签分析失败。", true);
+      console.error("analyze tags error:", error);
+    } finally {
+      setButtonBusy(analyzeTagsBtn, false);
+      refreshActionAvailability();
+    }
+  }
+
+  function collectCurrentCategories() {
+    const normalized = {};
+
+    Object.entries(tagCategories).forEach(([categoryName, tags]) => {
+      const cleanCategoryName = normalizeTagText(categoryName);
+      const cleanTags = tags
+        .map(normalizeTagText)
+        .filter(Boolean);
+
+      if (cleanCategoryName && cleanTags.length) {
+        normalized[cleanCategoryName] = cleanTags;
+      }
+    });
+
+    return normalized;
+  }
+
+  function collectCurrentTags() {
+    return Object.values(collectCurrentCategories()).flat();
+  }
+
+  function normalizeCategoryMap(categories) {
+    const normalized = {};
+
+    if (!categories || typeof categories !== "object") {
+      return normalized;
+    }
+
+    Object.entries(categories).forEach(([categoryName, tags]) => {
+      if (!Array.isArray(tags)) {
+        return;
+      }
+      normalized[categoryName] = tags.slice();
+    });
+
+    return normalized;
+  }
+
+  function collectCategoryCount() {
+    return Object.keys(collectCurrentCategories()).length;
+  }
+
+  function normalizeTagText(value) {
+    return value.trim().replace(/\s+/g, " ");
+  }
+
+  function renderTagResults(results = [], emptyMessage = "准备好音频后，就可以试试 CLAP 的标签判断效果。") {
+    tagResultsList.innerHTML = "";
+
+    if (!results.length) {
+      tagResultsEmpty.style.display = "";
+      tagResultsEmpty.textContent = emptyMessage;
+      return;
+    }
+
+    tagResultsEmpty.style.display = "none";
+
+    results.forEach((result) => {
+      const row = document.createElement("div");
+      row.className = "tag-result-item";
+
+      const label = document.createElement("span");
+      label.className = "tag-result-label";
+      label.textContent = result.label;
+
+      const score = document.createElement("span");
+      score.className = "tag-result-score";
+      score.textContent = Number(result.score).toFixed(4);
+
+      row.appendChild(label);
+      row.appendChild(score);
+      tagResultsList.appendChild(row);
+    });
   }
 
   function assignAudioPreview(player, blob, target) {
@@ -612,6 +897,34 @@ document.addEventListener("DOMContentLoaded", () => {
     const response = await fetchWithTimeout(`${API_BASE}${path}`, {
       method: "POST",
       body,
+    }, timeoutMs);
+
+    if (!response.ok) {
+      throw new Error(await readErrorMessage(response, "请求失败。"));
+    }
+
+    return response.json();
+  }
+
+  async function postJson(path, payload, timeoutMs) {
+    const response = await fetchWithTimeout(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }, timeoutMs);
+
+    if (!response.ok) {
+      throw new Error(await readErrorMessage(response, "请求失败。"));
+    }
+
+    return response.json();
+  }
+
+  async function fetchJson(path, timeoutMs) {
+    const response = await fetchWithTimeout(`${API_BASE}${path}`, {
+      method: "GET",
     }, timeoutMs);
 
     if (!response.ok) {
