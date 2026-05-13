@@ -1,43 +1,46 @@
-import torch
-from audiocraft.models import MusicGen
-import soundfile as sf
-from audio_utils import load_audio
-import tempfile
-import time
+import os
+from pathlib import Path
 
-# 加载模型
-device = "cuda" if torch.cuda.is_available() else "cpu"
-start_time = time.time()
-print("Loading MusicGen model...")
-model = MusicGen.get_pretrained("facebook/musicgen-melody", device=device)
-print(f"Model loaded in {time.time() - start_time:.2f} seconds")
+import requests
 
-def generate_audio(description: str, audio_path: str, duration: int) -> bytes:
-    print(f"Generating audio with description: '{description}', duration: {duration}")
-    melody = None
+
+MAGENTA_BASE_URL = os.getenv("MAGENTA_BASE_URL", "http://127.0.0.1:6006").rstrip("/")
+REQUEST_TIMEOUT = int(os.getenv("MAGENTA_TIMEOUT", "600"))
+
+
+def generate_audio(description: str, audio_path: str | None, duration: int) -> bytes:
+    print(
+        f"[remote_magenta] start duration={duration} "
+        f"has_audio={audio_path is not None} base_url={MAGENTA_BASE_URL}"
+    )
+
     if audio_path:
-        print(f"Loading audio from: {audio_path}")
-        melody, sr = load_audio(audio_path, model.sample_rate)
-        print(f"Loaded audio: shape={melody.shape}, sample_rate={sr}")
-
-    model.set_generation_params(duration=duration)
-
-    if melody is not None:
-        print("Generating audio with chroma...")
-        wav = model.generate_with_chroma(
-            descriptions=[description],
-            melody_wavs=melody,
-            melody_sample_rate=sr,
-            progress=False
-        )[0]
+        with open(audio_path, "rb") as audio:
+            response = requests.post(
+                f"{MAGENTA_BASE_URL}/v1/generate/file",
+                data={
+                    "prompts": description,
+                    "duration_seconds": str(float(duration)),
+                    "injection_mix": "1.0",
+                },
+                files={
+                    "audio_file": (Path(audio_path).name, audio, "audio/wav"),
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
     else:
-        print("Generating audio without chroma...")
-        wav = model.generate([description], progress=False)[0]
+        response = requests.post(
+            f"{MAGENTA_BASE_URL}/v1/generate",
+            json={
+                "prompts": [description],
+                "duration_seconds": float(duration),
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
 
-    print("Audio generation completed. Saving to temporary file...")
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_wav:
-        sf.write(temp_wav.name, wav.cpu().numpy().T, samplerate=model.sample_rate)
-        temp_wav.seek(0)
-        audio_data = temp_wav.read()
-    print("Audio saved to temporary file.")
-    return audio_data
+    if not response.ok:
+        print("[remote_magenta] failed", response.status_code, response.text[:1000])
+        response.raise_for_status()
+
+    print(f"[remote_magenta] completed bytes={len(response.content)}")
+    return response.content
