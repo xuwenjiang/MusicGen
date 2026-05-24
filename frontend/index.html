@@ -3,16 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MusicGen 控制台</title>
+    <title>灵韵知音 · 大模型试验区</title>
     <link rel="stylesheet" href="style.css?v=20260424b" />
     <script src="libs/recorder.js"></script>
   </head>
   <body>
     <div class="page-shell">
       <header class="hero">
-        <p class="eyebrow">MusicGen Demo</p>
-        <h1>试验区</h1>
-        <p class="hero-copy">准备音频，然后生成、检索或试验。</p>
+        <p class="eyebrow">Lingyun Zhiyin Lab</p>
+        <h1>灵韵知音 · 大模型试验区</h1>
+        <p class="hero-copy">面向音乐生成、音频回应与参数实验的本地控制台。</p>
         <div id="app-status" class="status-banner status-idle">
           已就绪。
         </div>
@@ -52,6 +52,14 @@
               </div>
               <audio id="input-player" controls></audio>
             </div>
+
+            <div class="result-card result-source generated-output">
+              <div class="result-head">
+                <h3>生成结果</h3>
+                <span class="result-caption">模型返回的新音频会出现在这里</span>
+              </div>
+              <audio id="generate-player" controls></audio>
+            </div>
           </article>
         </section>
 
@@ -59,38 +67,40 @@
           <article class="result-card spotlight-card">
             <div class="card-head">
               <p class="card-kicker">区域 2</p>
-              <h2>用文本和时长生成新音频</h2>
+              <h2>实时音乐输出试验</h2>
               <p>
-                这里负责生成。它会读取上面准备好的 audio input，再叠加文本提示和生成时长，输出一段新的音频结果。
+                输入一个 tag，把它变成可控制的参数条，然后一键开启持续音乐输出。
               </p>
             </div>
 
-            <label class="field-label" for="description">文本提示（可留空）</label>
-            <textarea
+            <label class="field-label" for="description">音乐 tag</label>
+            <input
+              type="text"
               id="description"
-              placeholder="例如：温暖的大提琴脉冲，慢拍，阴天氛围"
-            ></textarea>
+              placeholder="输入 tag 后按回车，例如：cello solo"
+            />
+            <input type="hidden" id="duration" value="6" />
 
-            <div class="field-row compact-fields">
-              <label class="field-stack" for="duration">
-                <span>生成时长（秒）</span>
-                <input type="number" id="duration" value="5" min="1" max="30" />
-              </label>
+            <div class="single-tag-control">
+              <div class="result-head">
+                <h3>声音元素</h3>
+                <span class="result-caption">回车添加，拖动权重；删除后会在下一轮淡出</span>
+              </div>
+              <div id="tag-control-list" class="tag-control-list"></div>
             </div>
 
             <div class="button-group primary-actions">
-              <button id="generate-btn" disabled>生成新音频</button>
+              <button id="generate-btn" disabled>开始持续输出</button>
+              <button id="stop-generate-btn" disabled>停止输出</button>
             </div>
 
             <div id="generate-status" class="status-banner status-idle">
-              如果文本留空，会自动使用默认示例提示词。
+              输入一个 tag 后，可以开启持续音乐输出。
+            </div>
+            <div id="stream-debug" class="stream-debug">
+              stream idle
             </div>
 
-            <div class="result-head">
-              <h3>生成结果</h3>
-              <span class="result-caption">模型返回的新音频会出现在这里</span>
-            </div>
-            <audio id="generate-player" controls></audio>
           </article>
 
           <article class="result-card library-card">
@@ -238,6 +248,6 @@
       </main>
     </div>
 
-    <script src="app.js?v=20260424c"></script>
+    <script src="app.js?v=20260521-preroll-crossfade"></script>
   </body>
 </html>

@@ -15,13 +15,26 @@ from typing import Dict, List, Optional
 
 from logging_utils import configure_logging, get_logger, log_params, reset_request_id, set_request_id
 from model_handler import generate_audio
-from sim_utils import build_index, find_similar, build_slice_index, score_audio_tags
 from tag_store import flatten_categories, load_tag_config, load_tags, normalize_tags, save_tag_config
 
 # ---------- 初始化 FastAPI ----------
 app = FastAPI()
 configure_logging()
 logger = get_logger("api")
+
+
+def load_sim_utils():
+    try:
+        from sim_utils import build_index, find_similar, build_slice_index, score_audio_tags
+    except ModuleNotFoundError as exc:
+        if exc.name == "faiss":
+            raise HTTPException(
+                status_code=503,
+                detail="FAISS dependency is not installed; similarity features are unavailable.",
+            ) from exc
+        raise
+
+    return build_index, find_similar, build_slice_index, score_audio_tags
 
 # 允许所有源跨域（开发阶段）
 app.add_middleware(
@@ -140,6 +153,7 @@ async def analyze_tags(
     tmp_path = await save_upload(audio_file)
 
     try:
+        _, _, _, score_audio_tags = load_sim_utils()
         results = score_audio_tags(
             query_path=str(tmp_path),
             tags=parsed_tags,
@@ -208,8 +222,14 @@ async def log_request_lifecycle(request: Request, call_next):
 @app.post("/generate")
 async def generate(
     description: str = Form(""),
+    prompts: str = Form(""),
+    prompt_weights: str = Form(""),
     audio_file: UploadFile = File(None),
     duration: int = Form(5),
+    temperature: Optional[float] = Form(None),
+    topk: Optional[int] = Form(None),
+    guidance_weight: Optional[float] = Form(None),
+    seed: Optional[int] = Form(None),
 ):
     """
     接收文本描述 + 可选音频，调用 MusicGen 生成新音乐并返回 WAV 文件。
@@ -219,8 +239,37 @@ async def generate(
         logger,
         description_preview=description,
         duration=duration,
+        prompts=prompts,
+        prompt_weights=prompt_weights,
+        temperature=temperature,
+        topk=topk,
+        guidance_weight=guidance_weight,
+        seed=seed,
         audio_file=audio_file.filename if audio_file else None,
     )
+
+    parsed_prompts = None
+    parsed_prompt_weights = None
+    if prompts:
+        try:
+            parsed_prompts = json.loads(prompts)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="prompts 不是合法 JSON") from exc
+        if not isinstance(parsed_prompts, list) or not all(isinstance(item, str) for item in parsed_prompts):
+            raise HTTPException(status_code=400, detail="prompts 必须是字符串数组")
+        parsed_prompts = [item.strip() for item in parsed_prompts if item.strip()]
+
+    if prompt_weights:
+        try:
+            parsed_prompt_weights = json.loads(prompt_weights)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="prompt_weights 不是合法 JSON") from exc
+        if not isinstance(parsed_prompt_weights, list):
+            raise HTTPException(status_code=400, detail="prompt_weights 必须是数字数组")
+        parsed_prompt_weights = [float(weight) for weight in parsed_prompt_weights]
+
+    if parsed_prompts and parsed_prompt_weights and len(parsed_prompts) != len(parsed_prompt_weights):
+        raise HTTPException(status_code=400, detail="prompt_weights 数量必须和 prompts 一致")
 
     # 1) 保存上传的音频（若有）
     saved_audio_path = None
@@ -232,7 +281,13 @@ async def generate(
         audio_bytes = generate_audio(
             description,
             str(saved_audio_path) if saved_audio_path else None,
-            duration
+            duration,
+            prompts=parsed_prompts,
+            prompt_weights=parsed_prompt_weights,
+            temperature=temperature,
+            topk=topk,
+            guidance_weight=guidance_weight,
+            seed=seed,
         )
 
         # 3) 写入临时 WAV 文件并返回
@@ -276,6 +331,7 @@ async def rebuild_index():
         return JSONResponse({"error": "preloaded 目录下没有 .wav 文件"}, status_code=400)
 
     # 1) 构建索引并获得文件名列表
+    build_index, _, _, _ = load_sim_utils()
     indexed_files = build_index(
         preload_dir=str(PRELOAD_DIR),
         index_path=str(INDEX_PATH)
@@ -324,6 +380,7 @@ async def api_find_similar(
 
     # 3) 调用 sim_utils.find_similar
     try:
+        _, find_similar, _, _ = load_sim_utils()
         matches, scores = find_similar(
             query_path=str(tmp_path),
             top_k=top_k,
@@ -387,6 +444,7 @@ async def rebuild_slice_index():
             window_size=SLICE_WINDOW_SIZE,
             hop_size=SLICE_HOP_SIZE,
         )
+        _, _, build_slice_index, _ = load_sim_utils()
         build_slice_index(
             preload_dir=str(PRELOAD_DIR),
             index_path=str(INDEX_PATH),
