@@ -67,9 +67,9 @@
           <article class="result-card spotlight-card">
             <div class="card-head">
               <p class="card-kicker">区域 2</p>
-              <h2>实时音乐输出试验</h2>
+              <h2>tag 参数如何影响音乐输出实验台</h2>
               <p>
-                输入一个 tag，把它变成可控制的参数条，然后一键开启持续音乐输出。
+                输入 tag，把它变成可控制的参数条，用来观察声音元素权重如何影响未来几秒的音乐输出。
               </p>
             </div>
 
@@ -101,6 +101,76 @@
               stream idle
             </div>
 
+          </article>
+
+          <article class="result-card parameter-card">
+            <div class="card-head">
+              <p class="card-kicker">区域 2.5</p>
+              <h2>大模型参数接口实验台</h2>
+              <p>
+                这些参数不直接改当前正在播放的声音，而是影响未来几秒生成出来的音乐形态。
+              </p>
+            </div>
+
+            <div class="model-parameter-grid live-parameter-grid">
+              <label class="slider-item" for="param-temperature">
+                <span>Temperature</span>
+                <input type="range" id="param-temperature" min="0.1" max="2.0" step="0.05" value="1.0" />
+                <b id="param-temperature-display">1.00</b>
+              </label>
+
+              <label class="slider-item" for="param-topk">
+                <span>Top-k</span>
+                <input type="range" id="param-topk" min="1" max="200" step="1" value="50" />
+                <b id="param-topk-display">50</b>
+              </label>
+
+              <label class="slider-item" for="param-guidance">
+                <span>Guidance</span>
+                <input type="range" id="param-guidance" min="0" max="10" step="0.1" value="4.0" />
+                <b id="param-guidance-display">4.0</b>
+              </label>
+
+              <label class="slider-item" for="param-injection">
+                <span>Audio mix</span>
+                <input type="range" id="param-injection" min="0" max="1" step="0.05" value="0" />
+                <b id="param-injection-display">0.00</b>
+              </label>
+
+              <label class="slider-item" for="param-context">
+                <span>Context seconds</span>
+                <input type="range" id="param-context" min="2" max="10" step="0.5" value="10" />
+                <b id="param-context-display">10.0</b>
+              </label>
+
+              <label class="slider-item" for="param-chunk">
+                <span>Chunk seconds</span>
+                <input type="range" id="param-chunk" min="1" max="8" step="0.5" value="2" />
+                <b id="param-chunk-display">2.0</b>
+              </label>
+
+              <label class="slider-item" for="param-preroll">
+                <span>Preroll chunks</span>
+                <input type="range" id="param-preroll" min="1" max="8" step="1" value="3" />
+                <b id="param-preroll-display">3</b>
+              </label>
+
+              <label class="slider-item" for="param-crossfade">
+                <span>Crossfade</span>
+                <input type="range" id="param-crossfade" min="0.05" max="2" step="0.05" value="0.35" />
+                <b id="param-crossfade-display">0.35</b>
+              </label>
+
+              <label class="slider-item" for="param-smoothing">
+                <span>Control smoothing</span>
+                <input type="range" id="param-smoothing" min="0.05" max="1" step="0.05" value="0.35" />
+                <b id="param-smoothing-display">0.35</b>
+              </label>
+            </div>
+
+            <div id="parameter-status" class="status-banner status-idle">
+              参数会作用到未来生成，不会强行打断当前播放。
+            </div>
           </article>
 
           <article class="result-card library-card">
@@ -248,6 +318,6 @@
       </main>
     </div>
 
-    <script src="app.js?v=20260521-preroll-crossfade"></script>
+    <script src="app.js?v=20260524-params-lab"></script>
   </body>
 </html>

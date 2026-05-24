@@ -35,6 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const audioStatus = document.getElementById("audio-status");
   const generateStatus = document.getElementById("generate-status");
   const streamDebug = document.getElementById("stream-debug");
+  const parameterStatus = document.getElementById("parameter-status");
   const libraryStatus = document.getElementById("library-status");
   const loopStatus = document.getElementById("loop-status");
   const sourceCaption = document.getElementById("source-caption");
@@ -86,6 +87,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const STREAM_CROSSFADE_SECONDS = 0.35;
   let streamIdCounter = 0;
   let streamPlaybackStarted = false;
+
+  const streamParameterControls = [
+    ["param-temperature", "param-temperature-display", "float", 2],
+    ["param-topk", "param-topk-display", "int", 0],
+    ["param-guidance", "param-guidance-display", "float", 1],
+    ["param-injection", "param-injection-display", "float", 2],
+    ["param-context", "param-context-display", "float", 1],
+    ["param-chunk", "param-chunk-display", "float", 1],
+    ["param-preroll", "param-preroll-display", "int", 0],
+    ["param-crossfade", "param-crossfade-display", "float", 2],
+    ["param-smoothing", "param-smoothing-display", "float", 2],
+  ];
+
+  bindStreamParameterControls();
 
   desc.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") {
@@ -397,6 +412,53 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+
+  function bindStreamParameterControls() {
+    streamParameterControls.forEach(([inputId, displayId, kind, digits]) => {
+      const input = document.getElementById(inputId);
+      const display = document.getElementById(displayId);
+      if (!input || !display) {
+        return;
+      }
+
+      const update = () => {
+        const value = Number(input.value);
+        display.textContent = kind === "int" ? String(Math.round(value)) : value.toFixed(Number(digits));
+        if (parameterStatus) {
+          setStatus(parameterStatus, "idle", "参数已更新，会从后续生成片段开始生效。", true);
+        }
+        sendLiveControlsToStreamDebounced();
+      };
+
+      input.addEventListener("input", update);
+      update();
+    });
+  }
+
+  function getStreamParameterValue(id, fallback) {
+    const input = document.getElementById(id);
+    if (!input) {
+      return fallback;
+    }
+    const value = Number(input.value);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  function getLiveStreamSettings() {
+    return {
+      temperature: getStreamParameterValue("param-temperature", 1.0),
+      topk: Math.round(getStreamParameterValue("param-topk", 50)),
+      guidanceWeight: getStreamParameterValue("param-guidance", 4.0),
+      injectionMix: getStreamParameterValue("param-injection", 0.0),
+      contextSeconds: getStreamParameterValue("param-context", 10.0),
+      chunkSeconds: getStreamParameterValue("param-chunk", STREAM_DURATION_SECONDS),
+      prerollChunks: Math.round(getStreamParameterValue("param-preroll", STREAM_PREROLL_CHUNKS)),
+      crossfadeSeconds: getStreamParameterValue("param-crossfade", STREAM_CROSSFADE_SECONDS),
+      controlSmoothing: getStreamParameterValue("param-smoothing", 0.35),
+    };
+  }
+
+
   function getEffectivePrompt() {
     return livePromptTags.map((tag) => tag.label).join(", ");
   }
@@ -596,16 +658,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function buildStreamConfig() {
     const weightedPrompt = getWeightedPromptPayload();
+    const settings = getLiveStreamSettings();
     return {
       sample_rate: STREAM_SAMPLE_RATE,
       channels: STREAM_CHANNELS,
       prompts: weightedPrompt.prompts.length ? weightedPrompt.prompts : ["lofi hip hop beat"],
       prompt_weights: weightedPrompt.promptWeights.length ? weightedPrompt.promptWeights : [1],
-      window_seconds: STREAM_WINDOW_SECONDS,
-      duration_seconds: STREAM_DURATION_SECONDS,
-      injection_mix: 0.0,
+      window_seconds: Math.min(settings.contextSeconds, settings.chunkSeconds),
+      duration_seconds: settings.chunkSeconds,
+      temperature: settings.temperature,
+      topk: settings.topk,
+      guidance_weight: settings.guidanceWeight,
+      injection_mix: settings.injectionMix,
+      control_smoothing: settings.controlSmoothing,
       history_tokens: true,
-      max_history_seconds: 10.0,
+      max_history_seconds: settings.contextSeconds,
     };
   }
 
@@ -646,7 +713,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!continuousGenerateActive || !stream) {
       return;
     }
-    if (stream.waitingForAudio || streamAudioQueue.length >= STREAM_MAX_QUEUE_CHUNKS) {
+    if (stream.waitingForAudio || streamAudioQueue.length >= Math.max(STREAM_MAX_QUEUE_CHUNKS, getLiveStreamSettings().prerollChunks + 2)) {
       return;
     }
     requestNextStreamAudio(stream);
@@ -656,8 +723,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (streamPlaybackStarted || !continuousGenerateActive) {
       return;
     }
-    if (streamAudioQueue.length < STREAM_PREROLL_CHUNKS) {
-      setStatus(generateStatus, "busy", `正在预缓冲 ${streamAudioQueue.length}/${STREAM_PREROLL_CHUNKS} 段，避免播放断开。`, true);
+    const settings = getLiveStreamSettings();
+    if (streamAudioQueue.length < settings.prerollChunks) {
+      setStatus(generateStatus, "busy", `正在预缓冲 ${streamAudioQueue.length}/${settings.prerollChunks} 段，避免播放断开。`, true);
       return;
     }
     streamPlaybackStarted = true;
@@ -672,7 +740,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!stream.socket || stream.socket.readyState !== WebSocket.OPEN) {
       return;
     }
-    if (stream.waitingForAudio || streamAudioQueue.length >= STREAM_MAX_QUEUE_CHUNKS) {
+    if (stream.waitingForAudio || streamAudioQueue.length >= Math.max(STREAM_MAX_QUEUE_CHUNKS, getLiveStreamSettings().prerollChunks + 2)) {
       return;
     }
 
@@ -703,22 +771,27 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const weightedPrompt = getWeightedPromptPayload();
+    const settings = getLiveStreamSettings();
     activeMagentaStream.socket.send(JSON.stringify({
       event: "set_controls",
       prompts: weightedPrompt.prompts.length ? weightedPrompt.prompts : ["lofi hip hop beat"],
       prompt_weights: weightedPrompt.promptWeights.length ? weightedPrompt.promptWeights : [1],
       history_tokens: true,
-      max_history_seconds: 10.0,
-      window_seconds: STREAM_WINDOW_SECONDS,
-      duration_seconds: STREAM_DURATION_SECONDS,
-      injection_mix: 0.0,
+      max_history_seconds: settings.contextSeconds,
+      window_seconds: Math.min(settings.contextSeconds, settings.chunkSeconds),
+      duration_seconds: settings.chunkSeconds,
+      temperature: settings.temperature,
+      topk: settings.topk,
+      guidance_weight: settings.guidanceWeight,
+      injection_mix: settings.injectionMix,
+      control_smoothing: settings.controlSmoothing,
     }));
     pushStreamDebug(`sent controls ${weightedPrompt.prompts.join(", ")}`);
   }
 
   function sendSilentStreamWindow(stream) {
     const frameSamples = Math.max(1, Math.round(STREAM_SAMPLE_RATE * STREAM_FRAME_SECONDS));
-    const frameCount = Math.max(1, Math.ceil(STREAM_WINDOW_SECONDS / STREAM_FRAME_SECONDS));
+    const frameCount = Math.max(1, Math.ceil(Math.min(getLiveStreamSettings().contextSeconds, getLiveStreamSettings().chunkSeconds) / STREAM_FRAME_SECONDS));
     const silentFrame = new ArrayBuffer(frameSamples * STREAM_CHANNELS * 2);
 
     for (let index = 0; index < frameCount; index += 1) {
@@ -769,7 +842,7 @@ document.addEventListener("DOMContentLoaded", () => {
     gain.connect(streamOutputContext.destination);
 
     const startAt = Math.max(streamOutputContext.currentTime + 0.04, streamScheduleTime);
-    const fadeSeconds = Math.min(STREAM_CROSSFADE_SECONDS, audioBuffer.duration / 4);
+    const fadeSeconds = Math.min(getLiveStreamSettings().crossfadeSeconds, audioBuffer.duration / 4);
     const holdUntil = startAt + Math.max(fadeSeconds, audioBuffer.duration - fadeSeconds);
 
     gain.gain.setValueAtTime(0.001, startAt);
