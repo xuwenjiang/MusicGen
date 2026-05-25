@@ -10,14 +10,17 @@ document.addEventListener("DOMContentLoaded", () => {
   let generatePreviewUrl = "";
   let searchPreviewUrl = "";
   let loopPreviewUrl = "";
+  let musicgenPreviewUrl = "";
 
   const desc = document.getElementById("description");
   const durationInput = document.getElementById("duration");
   const fileUpload = document.getElementById("file-upload");
+  const tagControlList = document.getElementById("tag-control-list");
 
   const recBtn = document.getElementById("record-btn");
   const stopBtn = document.getElementById("stop-btn");
   const genBtn = document.getElementById("generate-btn");
+  const stopGenBtn = document.getElementById("stop-generate-btn");
   const findBtn = document.getElementById("find-btn");
   const rebuildBtn = document.getElementById("rebuild-btn");
   const rebuildSliceBtn = document.getElementById("rebuild-slice-btn");
@@ -32,6 +35,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const appStatus = document.getElementById("app-status");
   const audioStatus = document.getElementById("audio-status");
   const generateStatus = document.getElementById("generate-status");
+  const streamDebug = document.getElementById("stream-debug");
+  const parameterStatus = document.getElementById("parameter-status");
   const libraryStatus = document.getElementById("library-status");
   const loopStatus = document.getElementById("loop-status");
   const sourceCaption = document.getElementById("source-caption");
@@ -50,6 +55,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const tagEditorList = document.getElementById("tag-editor-list");
   const tagResultsEmpty = document.getElementById("tag-results-empty");
   const tagResultsList = document.getElementById("tag-results-list");
+  const musicgenPromptInput = document.getElementById("musicgen-prompt");
+  const musicgenGenerateBtn = document.getElementById("musicgen-generate-btn");
+  const musicgenStatus = document.getElementById("musicgen-status");
+  const musicgenPlayer = document.getElementById("musicgen-player");
 
   let loopStream = null;
   let loopAudioContext = null;
@@ -60,8 +69,68 @@ document.addEventListener("DOMContentLoaded", () => {
   let segmentStartTime = null;
   let silentSince = null;
   let tagCategories = {};
+  let continuousGenerateActive = false;
+  let activeMagentaStream = null;
+  let pendingMagentaStream = null;
+  let pendingStreamTimer = null;
+  let streamAudioQueue = [];
+  let streamSchedulingActive = false;
+  let streamOutputContext = null;
+  let streamScheduleTime = 0;
+  let streamDebugLines = [];
+  let livePromptTags = [{ label: "cello solo", weight: 1 }];
+  let trackMixerActive = false;
+  let trackAudioContext = null;
+  const trackNodes = new Map();
+  const STREAM_SAMPLE_RATE = 48000;
+  const STREAM_CHANNELS = 1;
+  const STREAM_WINDOW_SECONDS = 2.0;
+  const STREAM_DURATION_SECONDS = 2.0;
+  const STREAM_FRAME_SECONDS = 0.1;
+  const STREAM_PREROLL_CHUNKS = 3;
+  const STREAM_MAX_QUEUE_CHUNKS = 5;
+  const STREAM_CROSSFADE_SECONDS = 0.35;
+  let streamIdCounter = 0;
+  let streamPlaybackStarted = false;
 
-  desc.addEventListener("input", refreshActionAvailability);
+  const streamParameterControls = [
+    ["param-temperature", "param-temperature-display", "float", 2],
+    ["param-topk", "param-topk-display", "int", 0],
+    ["param-guidance", "param-guidance-display", "float", 1],
+    ["param-injection", "param-injection-display", "float", 2],
+    ["param-context", "param-context-display", "float", 1],
+    ["param-chunk", "param-chunk-display", "float", 1],
+    ["param-preroll", "param-preroll-display", "int", 0],
+    ["param-crossfade", "param-crossfade-display", "float", 2],
+    ["param-smoothing", "param-smoothing-display", "float", 2],
+  ];
+  const musicgenParameterControls = [
+    ["musicgen-duration", "musicgen-duration-display", "int", 0],
+    ["musicgen-temperature", "musicgen-temperature-display", "float", 2],
+    ["musicgen-topk", "musicgen-topk-display", "int", 0],
+    ["musicgen-cfg", "musicgen-cfg-display", "float", 1],
+  ];
+
+  bindStreamParameterControls();
+  bindMusicGenControls();
+
+  desc.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    event.preventDefault();
+    addLivePromptTag(desc.value);
+    desc.value = "";
+  });
+  stopGenBtn.addEventListener("click", () => {
+    stopTrackMixer("多轨输出已停止。可以调整 tag 后再次开启。");
+  });
+  if (musicgenGenerateBtn) {
+    musicgenGenerateBtn.addEventListener("click", () => {
+      void generateMusicGenPreview();
+    });
+  }
 
   fileUpload.addEventListener("change", () => {
     const file = fileUpload.files[0] || null;
@@ -132,39 +201,23 @@ document.addEventListener("DOMContentLoaded", () => {
   genBtn.addEventListener("click", async () => {
     const effectivePrompt = getEffectivePrompt();
 
-    if (!sourceAudio) {
-      setStatus(generateStatus, "error", "要先在上面的区域准备一份音频输入，生成区才能工作。", true);
-      return;
-    }
-
     if (!effectivePrompt) {
-      setStatus(generateStatus, "error", "当前没有可用的文本提示。", true);
+      setStatus(generateStatus, "error", "先输入一个音乐 tag。", true);
       return;
     }
 
-    const duration = parseInt(durationInput.value, 10) || 5;
-    const formData = new FormData();
-    formData.append("description", effectivePrompt);
-    formData.append("duration", String(duration));
-    formData.append("audio_file", sourceAudio, normalizeSourceFilename(sourceAudioName));
+    trackMixerActive = true;
+    continuousGenerateActive = true;
+    genBtn.disabled = true;
+    stopGenBtn.disabled = false;
+    setStatus(generateStatus, "busy", "正在为每个 tag 创建独立音轨。", true);
+    setStatus(appStatus, "busy", "灵韵知音正在启动多轨输出。", true);
+    void startTrackMixer();
+  });
 
-    setButtonBusy(genBtn, true, "生成中...");
-    setStatus(generateStatus, "busy", "正在生成新音频。CPU 模式下可能会稍微久一点。", true);
-    setStatus(appStatus, "busy", "模型正在生成结果。", true);
-
-    try {
-      const blob = await postForAudio("/generate", formData, 180000);
-      assignAudioPreview(generatePlayer, blob, "generate");
-      await safePlay(generatePlayer);
-      setStatus(generateStatus, "success", "生成完成。新的音频结果已经放到下方播放器里。", true);
-      setStatus(appStatus, "success", "生成区已经返回结果。", true);
-    } catch (error) {
-      setStatus(generateStatus, "error", error.message || "生成失败。", true);
-      setStatus(appStatus, "error", "生成区执行失败。", true);
-      console.error("generate error:", error);
-    } finally {
-      setButtonBusy(genBtn, false);
-      refreshActionAvailability();
+  generatePlayer.addEventListener("ended", () => {
+    if (continuousGenerateActive && activeMagentaStream) {
+      requestNextStreamAudio(activeMagentaStream);
     }
   });
 
@@ -332,6 +385,7 @@ document.addEventListener("DOMContentLoaded", () => {
   saveTagsBtn.addEventListener("click", saveAvailableTags);
   analyzeTagsBtn.addEventListener("click", analyzeCurrentAudioTags);
 
+  renderLivePromptTags();
   refreshActionAvailability();
   renderTagResults();
   void initializeTagging();
@@ -341,7 +395,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const hasSourceAudio = Boolean(sourceAudio);
     const hasTags = collectCurrentTags().length > 0;
 
-    genBtn.disabled = !hasPrompt || !hasSourceAudio;
+    genBtn.disabled = !hasPrompt || continuousGenerateActive;
+    stopGenBtn.disabled = !continuousGenerateActive;
     findBtn.disabled = !hasSourceAudio;
     analyzeTagsBtn.disabled = !hasSourceAudio || !hasTags;
 
@@ -361,12 +416,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    if (!hasSourceAudio && !isPinned(generateStatus)) {
-      setStatus(generateStatus, "idle", "先准备音频输入；文本留空时会自动使用默认提示词。", true);
-    } else if (hasSourceAudio && !desc.value.trim() && !isPinned(generateStatus)) {
-      setStatus(generateStatus, "idle", "将使用默认示例提示词生成新音频。", true);
-    } else if (hasPrompt && hasSourceAudio && !isPinned(generateStatus)) {
-      setStatus(generateStatus, "idle", "文本提示和音频输入都准备好了，可以开始生成。", true);
+    if (!hasPrompt && !isPinned(generateStatus)) {
+      setStatus(generateStatus, "idle", "输入一个 tag 后，可以开启持续音乐输出。", true);
+    } else if (hasPrompt && !continuousGenerateActive && !isPinned(generateStatus)) {
+      setStatus(generateStatus, "idle", "tag 已经变成控制条，可以开始持续输出。", true);
     }
 
     if (!hasTags && !isPinned(tagStatus)) {
@@ -376,13 +429,582 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function getEffectivePrompt() {
-    const manualPrompt = desc.value.trim();
-    if (manualPrompt) {
-      return manualPrompt;
+
+
+  function bindMusicGenControls() {
+    musicgenParameterControls.forEach(([inputId, displayId, kind, digits]) => {
+      const input = document.getElementById(inputId);
+      const display = document.getElementById(displayId);
+      if (!input || !display) {
+        return;
+      }
+
+      const update = () => {
+        const value = Number(input.value);
+        display.textContent = kind === "int" ? String(Math.round(value)) : value.toFixed(Number(digits));
+      };
+
+      input.addEventListener("input", update);
+      update();
+    });
+  }
+
+  function getMusicGenValue(id, fallback) {
+    const input = document.getElementById(id);
+    if (!input) {
+      return fallback;
+    }
+    const value = Number(input.value);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  async function generateMusicGenPreview() {
+    const prompt = (musicgenPromptInput?.value || "").trim();
+    if (!prompt) {
+      setStatus(musicgenStatus, "error", "先输入一个 MusicGen prompt。", true);
+      return;
     }
 
-    return desc.placeholder.trim();
+    const payload = {
+      prompt,
+      duration: getMusicGenValue("musicgen-duration", 3),
+      temperature: getMusicGenValue("musicgen-temperature", 1),
+      top_k: Math.round(getMusicGenValue("musicgen-topk", 250)),
+      cfg_coef: getMusicGenValue("musicgen-cfg", 3),
+    };
+
+    setButtonBusy(musicgenGenerateBtn, true, "生成中...");
+    setStatus(musicgenStatus, "busy", "MusicGen 正在预生成片段。", true);
+    setStatus(appStatus, "busy", "MusicGen 预生成正在执行。", true);
+
+    try {
+      const blob = await postJsonForAudio("/musicgen/generate", payload, 180000);
+      assignAudioPreview(musicgenPlayer, blob, "musicgen");
+      await safePlay(musicgenPlayer);
+      setStatus(musicgenStatus, "success", "MusicGen 片段已生成，可作为预生成素材候选。", true);
+      setStatus(appStatus, "success", "MusicGen 预生成完成。", true);
+    } catch (error) {
+      setStatus(musicgenStatus, "error", error.message || "MusicGen 生成失败。", true);
+      setStatus(appStatus, "error", "MusicGen 预生成失败。", true);
+      console.error("musicgen generate error:", error);
+    } finally {
+      setButtonBusy(musicgenGenerateBtn, false);
+    }
+  }
+
+  function bindStreamParameterControls() {
+    streamParameterControls.forEach(([inputId, displayId, kind, digits]) => {
+      const input = document.getElementById(inputId);
+      const display = document.getElementById(displayId);
+      if (!input || !display) {
+        return;
+      }
+
+      const update = () => {
+        const value = Number(input.value);
+        display.textContent = kind === "int" ? String(Math.round(value)) : value.toFixed(Number(digits));
+        if (parameterStatus) {
+          setStatus(parameterStatus, "idle", "参数已更新，会从后续生成片段开始生效。", true);
+        }
+        sendLiveControlsToStreamDebounced();
+      };
+
+      input.addEventListener("input", update);
+      update();
+    });
+  }
+
+  function getStreamParameterValue(id, fallback) {
+    const input = document.getElementById(id);
+    if (!input) {
+      return fallback;
+    }
+    const value = Number(input.value);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  function getLiveStreamSettings() {
+    return {
+      temperature: getStreamParameterValue("param-temperature", 1.0),
+      topk: Math.round(getStreamParameterValue("param-topk", 50)),
+      guidanceWeight: getStreamParameterValue("param-guidance", 4.0),
+      injectionMix: getStreamParameterValue("param-injection", 0.0),
+      contextSeconds: getStreamParameterValue("param-context", 10.0),
+      chunkSeconds: getStreamParameterValue("param-chunk", STREAM_DURATION_SECONDS),
+      prerollChunks: Math.round(getStreamParameterValue("param-preroll", STREAM_PREROLL_CHUNKS)),
+      crossfadeSeconds: getStreamParameterValue("param-crossfade", STREAM_CROSSFADE_SECONDS),
+      controlSmoothing: getStreamParameterValue("param-smoothing", 0.35),
+    };
+  }
+
+
+  function getEffectivePrompt() {
+    return livePromptTags.map((tag) => tag.label).join(", ");
+  }
+
+  function getWeightedPromptPayload() {
+    return {
+      prompts: livePromptTags.map((tag) => tag.label),
+      promptWeights: livePromptTags.map((tag) => tag.weight),
+    };
+  }
+
+  function addLivePromptTag(rawValue) {
+    const label = rawValue.trim();
+    if (!label) {
+      return;
+    }
+
+    const exists = livePromptTags.some(
+      (tag) => tag.label.localeCompare(label, undefined, { sensitivity: "accent" }) === 0,
+    );
+    if (exists) {
+      setStatus(generateStatus, "idle", `tag 已存在：${label}`, true);
+      return;
+    }
+
+    livePromptTags.push({ label, weight: 0.1 });
+    renderLivePromptTags();
+    setStatus(generateStatus, "idle", `已添加 ${label}，它会从低权重开始淡入。`, true);
+    if (trackMixerActive) {
+      void ensureTrack(livePromptTags[livePromptTags.length - 1]);
+    }
+  }
+
+  function removeLivePromptTag(index) {
+    const removed = livePromptTags[index];
+    livePromptTags.splice(index, 1);
+    renderLivePromptTags();
+    setStatus(generateStatus, "idle", removed ? `已删除 ${removed.label}，它会在下一轮淡出。` : "已删除 tag。", true);
+    if (removed) {
+      fadeOutAndRemoveTrack(removed.label);
+    }
+  }
+
+  function renderLivePromptTags() {
+    tagControlList.innerHTML = "";
+
+    if (!livePromptTags.length) {
+      const emptyNote = document.createElement("p");
+      emptyNote.className = "empty-note";
+      emptyNote.textContent = "还没有声音元素。输入 tag 后按回车。";
+      tagControlList.appendChild(emptyNote);
+      refreshActionAvailability();
+      return;
+    }
+
+    livePromptTags.forEach((tag, index) => {
+      const row = document.createElement("div");
+      row.className = "live-tag-row";
+
+      const label = document.createElement("span");
+      label.className = "live-tag-label";
+      label.textContent = tag.label;
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = "0";
+      slider.max = "1.5";
+      slider.step = "0.05";
+      slider.value = String(tag.weight);
+
+      const value = document.createElement("span");
+      value.className = "live-tag-value";
+      value.textContent = tag.weight.toFixed(2);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "live-tag-remove";
+      removeBtn.textContent = "删除";
+
+      slider.addEventListener("input", () => {
+        livePromptTags[index].weight = Number(slider.value);
+        value.textContent = livePromptTags[index].weight.toFixed(2);
+        updateTrackGain(livePromptTags[index]);
+      });
+      removeBtn.addEventListener("click", () => removeLivePromptTag(index));
+
+      row.append(label, slider, value, removeBtn);
+      tagControlList.appendChild(row);
+    });
+
+    refreshActionAvailability();
+  }
+
+  function applyLivePromptChange() {
+    sendLiveControlsToStreamDebounced();
+  }
+
+  async function startTrackMixer() {
+    if (!livePromptTags.length) {
+      setStatus(generateStatus, "error", "先输入一个音乐 tag。", true);
+      return;
+    }
+
+    stopMagentaStream("", false);
+    trackMixerActive = true;
+    continuousGenerateActive = true;
+    genBtn.disabled = true;
+    stopGenBtn.disabled = false;
+    streamAudioQueue = [];
+    streamDebugLines = [];
+    streamPlaybackStarted = false;
+
+    if (!streamOutputContext) {
+      streamOutputContext = new (window.AudioContext || window.webkitAudioContext)();
+      streamScheduleTime = streamOutputContext.currentTime + 0.12;
+    }
+    if (streamOutputContext.state === "suspended") {
+      await streamOutputContext.resume();
+    }
+
+    pushStreamDebug("opening single Magenta RT stream");
+    activeMagentaStream = openMagentaStream("live");
+    setStatus(generateStatus, "busy", "正在连接 Magenta RT。", true);
+    setStatus(appStatus, "busy", "灵韵知音正在启动实时输出。", true);
+    refreshActionAvailability();
+  }
+
+  async function ensureTrack() {
+    sendLiveControlsToStreamDebounced();
+  }
+
+  function updateTrackGain() {
+    sendLiveControlsToStreamDebounced();
+  }
+
+  function fadeOutAndRemoveTrack() {
+    sendLiveControlsToStreamDebounced();
+  }
+
+  function stopTrackMixer(message) {
+    stopMagentaStream(message || "实时输出已停止。");
+  }
+
+  function startMagentaStream() {
+    void startTrackMixer();
+  }
+
+  function openMagentaStream(role) {
+    const ws = new WebSocket(resolveMagentaStreamUrl());
+    const stream = {
+      id: streamIdCounter += 1,
+      role,
+      socket: ws,
+      waitingForAudio: false,
+      requestTimer: null,
+    };
+    ws.binaryType = "arraybuffer";
+
+    ws.addEventListener("open", () => {
+      pushStreamDebug(`${role}#${stream.id} open`);
+      ws.send(JSON.stringify(buildStreamConfig()));
+      setStatus(generateStatus, "busy", "Magenta RT 已连接，正在请求第一段音频。", true);
+    });
+
+    ws.addEventListener("message", (event) => {
+      if (typeof event.data === "string") {
+        pushStreamDebug(`${role}#${stream.id} event ${event.data}`);
+        handleStreamEvent(stream, event.data);
+        return;
+      }
+
+      const blob = new Blob([event.data], { type: "audio/wav" });
+      pushStreamDebug(`${role}#${stream.id} audio bytes=${blob.size}`);
+      stream.waitingForAudio = false;
+      streamAudioQueue.push(blob);
+      assignAudioPreview(generatePlayer, blob, "generate");
+      fillStreamPreroll(stream);
+      maybeStartStreamPlayback();
+    });
+
+    ws.addEventListener("close", () => {
+      pushStreamDebug(`${role}#${stream.id} close`);
+      if (continuousGenerateActive && stream === activeMagentaStream) {
+        stopMagentaStream("Magenta RT 连接已关闭。");
+      }
+    });
+
+    ws.addEventListener("error", () => {
+      pushStreamDebug(`${role}#${stream.id} error`);
+      if (stream === activeMagentaStream) {
+        stopMagentaStream("Magenta RT 连接出错，请确认 6006 服务和 SSH 隧道都在运行。");
+      }
+    });
+
+    return stream;
+  }
+
+  function buildStreamConfig() {
+    const weightedPrompt = getWeightedPromptPayload();
+    const settings = getLiveStreamSettings();
+    return {
+      sample_rate: STREAM_SAMPLE_RATE,
+      channels: STREAM_CHANNELS,
+      prompts: weightedPrompt.prompts.length ? weightedPrompt.prompts : ["lofi hip hop beat"],
+      prompt_weights: weightedPrompt.promptWeights.length ? weightedPrompt.promptWeights : [1],
+      window_seconds: Math.min(settings.contextSeconds, settings.chunkSeconds),
+      duration_seconds: settings.chunkSeconds,
+      temperature: settings.temperature,
+      topk: settings.topk,
+      guidance_weight: settings.guidanceWeight,
+      injection_mix: settings.injectionMix,
+      control_smoothing: settings.controlSmoothing,
+      history_tokens: true,
+      max_history_seconds: settings.contextSeconds,
+    };
+  }
+
+  function handleStreamEvent(stream, rawMessage) {
+    let event;
+    try {
+      event = JSON.parse(rawMessage);
+    } catch (error) {
+      console.warn("stream event parse error:", error, rawMessage);
+      return;
+    }
+
+    if (event.event === "ready") {
+      fillStreamPreroll(stream);
+      return;
+    }
+
+    if (event.event === "buffered") {
+      return;
+    }
+
+    if (event.event === "controls_updated") {
+      pushStreamDebug("controls updated");
+      return;
+    }
+
+    if (event.event === "audio") {
+      stream.waitingForAudio = true;
+      return;
+    }
+
+    if (event.event === "error") {
+      stopMagentaStream(event.detail || "Magenta RT 返回错误。");
+    }
+  }
+
+  function fillStreamPreroll(stream = activeMagentaStream) {
+    if (!continuousGenerateActive || !stream) {
+      return;
+    }
+    if (stream.waitingForAudio || streamAudioQueue.length >= Math.max(STREAM_MAX_QUEUE_CHUNKS, getLiveStreamSettings().prerollChunks + 2)) {
+      return;
+    }
+    requestNextStreamAudio(stream);
+  }
+
+  function maybeStartStreamPlayback() {
+    if (streamPlaybackStarted || !continuousGenerateActive) {
+      return;
+    }
+    const settings = getLiveStreamSettings();
+    if (streamAudioQueue.length < settings.prerollChunks) {
+      setStatus(generateStatus, "busy", `正在预缓冲 ${streamAudioQueue.length}/${settings.prerollChunks} 段，避免播放断开。`, true);
+      return;
+    }
+    streamPlaybackStarted = true;
+    pushStreamDebug(`playback start queue=${streamAudioQueue.length}`);
+    void scheduleQueuedStreamAudio();
+  }
+
+  function requestNextStreamAudio(stream = activeMagentaStream) {
+    if (!stream || !continuousGenerateActive) {
+      return;
+    }
+    if (!stream.socket || stream.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    if (stream.waitingForAudio || streamAudioQueue.length >= Math.max(STREAM_MAX_QUEUE_CHUNKS, getLiveStreamSettings().prerollChunks + 2)) {
+      return;
+    }
+
+    stream.waitingForAudio = true;
+    try {
+      sendSilentStreamWindow(stream);
+      stream.socket.send(JSON.stringify({ event: "flush" }));
+      pushStreamDebug(`${stream.role}#${stream.id} request next chunk queue=${streamAudioQueue.length}`);
+    } catch (error) {
+      stream.waitingForAudio = false;
+      stopMagentaStream("发送流式请求失败。");
+    }
+  }
+
+  function sendLiveControlsToStreamDebounced() {
+    if (pendingStreamTimer) {
+      window.clearTimeout(pendingStreamTimer);
+    }
+    pendingStreamTimer = window.setTimeout(() => {
+      pendingStreamTimer = null;
+      sendLiveControlsToStream();
+    }, 120);
+  }
+
+  function sendLiveControlsToStream() {
+    if (!activeMagentaStream?.socket || activeMagentaStream.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const weightedPrompt = getWeightedPromptPayload();
+    const settings = getLiveStreamSettings();
+    activeMagentaStream.socket.send(JSON.stringify({
+      event: "set_controls",
+      prompts: weightedPrompt.prompts.length ? weightedPrompt.prompts : ["lofi hip hop beat"],
+      prompt_weights: weightedPrompt.promptWeights.length ? weightedPrompt.promptWeights : [1],
+      history_tokens: true,
+      max_history_seconds: settings.contextSeconds,
+      window_seconds: Math.min(settings.contextSeconds, settings.chunkSeconds),
+      duration_seconds: settings.chunkSeconds,
+      temperature: settings.temperature,
+      topk: settings.topk,
+      guidance_weight: settings.guidanceWeight,
+      injection_mix: settings.injectionMix,
+      control_smoothing: settings.controlSmoothing,
+    }));
+    pushStreamDebug(`sent controls ${weightedPrompt.prompts.join(", ")}`);
+  }
+
+  function sendSilentStreamWindow(stream) {
+    const frameSamples = Math.max(1, Math.round(STREAM_SAMPLE_RATE * STREAM_FRAME_SECONDS));
+    const frameCount = Math.max(1, Math.ceil(Math.min(getLiveStreamSettings().contextSeconds, getLiveStreamSettings().chunkSeconds) / STREAM_FRAME_SECONDS));
+    const silentFrame = new ArrayBuffer(frameSamples * STREAM_CHANNELS * 2);
+
+    for (let index = 0; index < frameCount; index += 1) {
+      stream.socket.send(silentFrame);
+    }
+  }
+
+  async function scheduleQueuedStreamAudio() {
+    if (!continuousGenerateActive || streamSchedulingActive || !streamAudioQueue.length) {
+      return;
+    }
+
+    streamSchedulingActive = true;
+    try {
+      while (continuousGenerateActive && streamAudioQueue.length) {
+        const blob = streamAudioQueue.shift();
+        await scheduleStreamBlob(blob);
+        fillStreamPreroll(activeMagentaStream);
+      }
+      setStatus(generateStatus, "success", "持续输出中。系统会提前缓冲下一段，并用淡入淡出衔接。", true);
+    } catch (error) {
+      pushStreamDebug(`schedule failed ${error.message || error}`);
+      stopMagentaStream("播放队列调度失败。");
+    } finally {
+      streamSchedulingActive = false;
+      if (continuousGenerateActive && streamAudioQueue.length) {
+        void scheduleQueuedStreamAudio();
+      }
+    }
+  }
+
+  async function scheduleStreamBlob(blob) {
+    if (!streamOutputContext) {
+      streamOutputContext = new (window.AudioContext || window.webkitAudioContext)();
+      streamScheduleTime = streamOutputContext.currentTime + 0.12;
+    }
+
+    if (streamOutputContext.state === "suspended") {
+      await streamOutputContext.resume();
+    }
+
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioBuffer = await streamOutputContext.decodeAudioData(arrayBuffer.slice(0));
+    const source = streamOutputContext.createBufferSource();
+    const gain = streamOutputContext.createGain();
+    source.buffer = audioBuffer;
+    source.connect(gain);
+    gain.connect(streamOutputContext.destination);
+
+    const startAt = Math.max(streamOutputContext.currentTime + 0.04, streamScheduleTime);
+    const fadeSeconds = Math.min(getLiveStreamSettings().crossfadeSeconds, audioBuffer.duration / 4);
+    const holdUntil = startAt + Math.max(fadeSeconds, audioBuffer.duration - fadeSeconds);
+
+    gain.gain.setValueAtTime(0.001, startAt);
+    gain.gain.linearRampToValueAtTime(1, startAt + fadeSeconds);
+    gain.gain.setValueAtTime(1, holdUntil);
+    gain.gain.linearRampToValueAtTime(0.001, startAt + audioBuffer.duration);
+
+    source.start(startAt);
+    streamScheduleTime = startAt + audioBuffer.duration - fadeSeconds;
+    pushStreamDebug(`scheduled ${audioBuffer.duration.toFixed(2)}s queue=${streamAudioQueue.length}`);
+
+    const secondsUntilLowBuffer = Math.max(0.1, streamScheduleTime - streamOutputContext.currentTime - 1.0);
+    window.setTimeout(() => {
+      fillStreamPreroll(activeMagentaStream);
+      if (streamPlaybackStarted && streamAudioQueue.length) {
+        void scheduleQueuedStreamAudio();
+      }
+    }, secondsUntilLowBuffer * 1000);
+
+    source.onended = () => {
+      fillStreamPreroll(activeMagentaStream);
+      if (streamPlaybackStarted && streamAudioQueue.length) {
+        void scheduleQueuedStreamAudio();
+      }
+    };
+  }
+
+  function pushStreamDebug(message) {
+    const stamp = new Date().toLocaleTimeString();
+    streamDebugLines.push(`${stamp} ${message}`);
+    streamDebugLines = streamDebugLines.slice(-8);
+    if (streamDebug) {
+      streamDebug.textContent = streamDebugLines.join("\n");
+    }
+  }
+
+  function stopMagentaStream(message, updateStatus = true) {
+    trackMixerActive = false;
+    continuousGenerateActive = false;
+
+    if (pendingStreamTimer) {
+      window.clearTimeout(pendingStreamTimer);
+      pendingStreamTimer = null;
+    }
+
+    streamAudioQueue = [];
+    streamSchedulingActive = false;
+    streamScheduleTime = 0;
+    streamPlaybackStarted = false;
+
+    if (activeMagentaStream?.socket) {
+      activeMagentaStream.socket.onclose = null;
+      activeMagentaStream.socket.close();
+    }
+    if (pendingMagentaStream?.socket) {
+      pendingMagentaStream.socket.onclose = null;
+      pendingMagentaStream.socket.close();
+    }
+
+    activeMagentaStream = null;
+    pendingMagentaStream = null;
+    trackNodes.clear();
+
+    generatePlayer.pause();
+
+    if (streamOutputContext) {
+      void streamOutputContext.close();
+      streamOutputContext = null;
+    }
+
+    genBtn.disabled = !getEffectivePrompt();
+    stopGenBtn.disabled = true;
+
+    if (updateStatus && message) {
+      setStatus(generateStatus, "idle", message, true);
+      setStatus(appStatus, "idle", "实时音乐输出已停止。", true);
+    }
+
+    refreshActionAvailability();
+  }
+
+  function resolveMagentaStreamUrl() {
+    return "ws://127.0.0.1:6006/v1/stream";
   }
 
   function setSourceAudio(audioLike, label) {
@@ -878,6 +1500,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function isPinned(element) {
     return element?.dataset.pinned === "true";
+  }
+
+  async function postJsonForAudio(path, payload, timeoutMs) {
+    const response = await fetchWithTimeout(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, timeoutMs);
+
+    if (!response.ok) {
+      const message = await readErrorMessage(response, "音频生成失败。");
+      throw new Error(message);
+    }
+
+    return response.blob();
   }
 
   async function postForAudio(path, body, timeoutMs) {
