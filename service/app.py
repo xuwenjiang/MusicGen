@@ -8,13 +8,13 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 
 from logging_utils import configure_logging, get_logger, log_params, reset_request_id, set_request_id
-from model_handler import generate_audio
+from model_handler import check_musicgen_health, generate_audio, generate_musicgen_audio
 from tag_store import flatten_categories, load_tag_config, load_tags, normalize_tags, save_tag_config
 
 # ---------- 初始化 FastAPI ----------
@@ -60,6 +60,15 @@ SLICE_HOP_SIZE = 0.5                                # 切片帧移大小（秒�
 
 class TagsPayload(BaseModel):
     categories: Dict[str, List[str]]
+
+
+class MusicGenPayload(BaseModel):
+    prompt: str = "lofi hip hop beat"
+    duration: float = 5.0
+    temperature: float = 1.0
+    top_k: int = 250
+    top_p: float = 0.0
+    cfg_coef: float = 3.0
 
 
 # ---------- 通用上传辅助 ----------
@@ -314,6 +323,43 @@ async def generate(
     except Exception as e:
         logger.exception("[ERROR] generate.failed error=%s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+
+
+# ---------- MusicGen 远端服务代理 ----------
+@app.get("/musicgen/health")
+async def musicgen_health():
+    try:
+        return check_musicgen_health()
+    except Exception as exc:
+        logger.exception("[ERROR] musicgen.health.failed error=%s", exc)
+        raise HTTPException(status_code=502, detail="MusicGen service unavailable") from exc
+
+
+@app.post("/musicgen/generate")
+async def musicgen_generate(payload: MusicGenPayload):
+    try:
+        audio_bytes, headers = generate_musicgen_audio(
+            prompt=payload.prompt,
+            duration=payload.duration,
+            temperature=payload.temperature,
+            top_k=payload.top_k,
+            top_p=payload.top_p,
+            cfg_coef=payload.cfg_coef,
+        )
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={
+                "X-Generation-Seconds": headers.get("x-generation-seconds", ""),
+                "X-Sample-Rate": headers.get("x-sample-rate", ""),
+                "X-Model": headers.get("x-model", ""),
+            },
+        )
+    except Exception as exc:
+        logger.exception("[ERROR] musicgen.generate.failed error=%s", exc)
+        raise HTTPException(status_code=500, detail="MusicGen generate failed") from exc
 
 
 # ---------- 索引重建接口 ----------

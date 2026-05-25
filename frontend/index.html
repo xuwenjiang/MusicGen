@@ -67,7 +67,7 @@
           <article class="result-card spotlight-card">
             <div class="card-head">
               <p class="card-kicker">区域 2</p>
-              <h2>tag 参数如何影响音乐输出实验台</h2>
+              <h2>Magenta RT：tag 参数如何影响音乐输出实验台</h2>
               <p>
                 输入 tag，把它变成可控制的参数条，用来观察声音元素权重如何影响未来几秒的音乐输出。
               </p>
@@ -106,7 +106,7 @@
           <article class="result-card parameter-card">
             <div class="card-head">
               <p class="card-kicker">区域 2.5</p>
-              <h2>大模型参数接口实验台</h2>
+              <h2>Magenta RT：实时生成参数接口实验台</h2>
               <p>
                 这些参数不直接改当前正在播放的声音，而是影响未来几秒生成出来的音乐形态。
               </p>
@@ -171,6 +171,60 @@
             <div id="parameter-status" class="status-banner status-idle">
               参数会作用到未来生成，不会强行打断当前播放。
             </div>
+          </article>
+
+          <article class="result-card musicgen-card">
+            <div class="card-head">
+              <p class="card-kicker">区域 2.6</p>
+              <h2>MusicGen：预生成实验台</h2>
+              <p>
+                用 MusicGen 在后台生成完整片段，作为未来素材池、检索播放和混合模式的预生成来源。
+              </p>
+            </div>
+
+            <label class="field-label" for="musicgen-prompt">MusicGen prompt</label>
+            <input
+              type="text"
+              id="musicgen-prompt"
+              value="lofi hip hop beat"
+              placeholder="例如：lofi hip hop beat"
+            />
+
+            <div class="model-parameter-grid live-parameter-grid musicgen-parameter-grid">
+              <label class="slider-item" for="musicgen-duration">
+                <span>Duration</span>
+                <input type="range" id="musicgen-duration" min="1" max="30" step="1" value="3" />
+                <b id="musicgen-duration-display">3</b>
+              </label>
+
+              <label class="slider-item" for="musicgen-temperature">
+                <span>Temperature</span>
+                <input type="range" id="musicgen-temperature" min="0.1" max="2" step="0.05" value="1.0" />
+                <b id="musicgen-temperature-display">1.00</b>
+              </label>
+
+              <label class="slider-item" for="musicgen-topk">
+                <span>Top-k</span>
+                <input type="range" id="musicgen-topk" min="1" max="500" step="1" value="250" />
+                <b id="musicgen-topk-display">250</b>
+              </label>
+
+              <label class="slider-item" for="musicgen-cfg">
+                <span>CFG</span>
+                <input type="range" id="musicgen-cfg" min="0" max="10" step="0.1" value="3.0" />
+                <b id="musicgen-cfg-display">3.0</b>
+              </label>
+            </div>
+
+            <div class="button-group primary-actions">
+              <button id="musicgen-generate-btn" type="button">生成 MusicGen 片段</button>
+            </div>
+
+            <div id="musicgen-status" class="status-banner status-idle">
+              MusicGen 用于预生成完整片段，不会影响 Magenta RT 实时流。
+            </div>
+
+            <audio id="musicgen-player" controls></audio>
           </article>
 
           <article class="result-card library-card">
@@ -318,6 +372,6 @@
       </main>
     </div>
 
-    <script src="app.js?v=20260524-params-lab"></script>
+    <script src="app.js?v=20260525-musicgen-panel-labels"></script>
   </body>
 </html>

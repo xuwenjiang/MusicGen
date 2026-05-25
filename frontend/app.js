@@ -10,6 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let generatePreviewUrl = "";
   let searchPreviewUrl = "";
   let loopPreviewUrl = "";
+  let musicgenPreviewUrl = "";
 
   const desc = document.getElementById("description");
   const durationInput = document.getElementById("duration");
@@ -54,6 +55,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const tagEditorList = document.getElementById("tag-editor-list");
   const tagResultsEmpty = document.getElementById("tag-results-empty");
   const tagResultsList = document.getElementById("tag-results-list");
+  const musicgenPromptInput = document.getElementById("musicgen-prompt");
+  const musicgenGenerateBtn = document.getElementById("musicgen-generate-btn");
+  const musicgenStatus = document.getElementById("musicgen-status");
+  const musicgenPlayer = document.getElementById("musicgen-player");
 
   let loopStream = null;
   let loopAudioContext = null;
@@ -99,8 +104,15 @@ document.addEventListener("DOMContentLoaded", () => {
     ["param-crossfade", "param-crossfade-display", "float", 2],
     ["param-smoothing", "param-smoothing-display", "float", 2],
   ];
+  const musicgenParameterControls = [
+    ["musicgen-duration", "musicgen-duration-display", "int", 0],
+    ["musicgen-temperature", "musicgen-temperature-display", "float", 2],
+    ["musicgen-topk", "musicgen-topk-display", "int", 0],
+    ["musicgen-cfg", "musicgen-cfg-display", "float", 1],
+  ];
 
   bindStreamParameterControls();
+  bindMusicGenControls();
 
   desc.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") {
@@ -114,6 +126,11 @@ document.addEventListener("DOMContentLoaded", () => {
   stopGenBtn.addEventListener("click", () => {
     stopTrackMixer("多轨输出已停止。可以调整 tag 后再次开启。");
   });
+  if (musicgenGenerateBtn) {
+    musicgenGenerateBtn.addEventListener("click", () => {
+      void generateMusicGenPreview();
+    });
+  }
 
   fileUpload.addEventListener("change", () => {
     const file = fileUpload.files[0] || null;
@@ -412,6 +429,68 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+
+
+  function bindMusicGenControls() {
+    musicgenParameterControls.forEach(([inputId, displayId, kind, digits]) => {
+      const input = document.getElementById(inputId);
+      const display = document.getElementById(displayId);
+      if (!input || !display) {
+        return;
+      }
+
+      const update = () => {
+        const value = Number(input.value);
+        display.textContent = kind === "int" ? String(Math.round(value)) : value.toFixed(Number(digits));
+      };
+
+      input.addEventListener("input", update);
+      update();
+    });
+  }
+
+  function getMusicGenValue(id, fallback) {
+    const input = document.getElementById(id);
+    if (!input) {
+      return fallback;
+    }
+    const value = Number(input.value);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  async function generateMusicGenPreview() {
+    const prompt = (musicgenPromptInput?.value || "").trim();
+    if (!prompt) {
+      setStatus(musicgenStatus, "error", "先输入一个 MusicGen prompt。", true);
+      return;
+    }
+
+    const payload = {
+      prompt,
+      duration: getMusicGenValue("musicgen-duration", 3),
+      temperature: getMusicGenValue("musicgen-temperature", 1),
+      top_k: Math.round(getMusicGenValue("musicgen-topk", 250)),
+      cfg_coef: getMusicGenValue("musicgen-cfg", 3),
+    };
+
+    setButtonBusy(musicgenGenerateBtn, true, "生成中...");
+    setStatus(musicgenStatus, "busy", "MusicGen 正在预生成片段。", true);
+    setStatus(appStatus, "busy", "MusicGen 预生成正在执行。", true);
+
+    try {
+      const blob = await postJsonForAudio("/musicgen/generate", payload, 180000);
+      assignAudioPreview(musicgenPlayer, blob, "musicgen");
+      await safePlay(musicgenPlayer);
+      setStatus(musicgenStatus, "success", "MusicGen 片段已生成，可作为预生成素材候选。", true);
+      setStatus(appStatus, "success", "MusicGen 预生成完成。", true);
+    } catch (error) {
+      setStatus(musicgenStatus, "error", error.message || "MusicGen 生成失败。", true);
+      setStatus(appStatus, "error", "MusicGen 预生成失败。", true);
+      console.error("musicgen generate error:", error);
+    } finally {
+      setButtonBusy(musicgenGenerateBtn, false);
+    }
+  }
 
   function bindStreamParameterControls() {
     streamParameterControls.forEach(([inputId, displayId, kind, digits]) => {
@@ -1421,6 +1500,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function isPinned(element) {
     return element?.dataset.pinned === "true";
+  }
+
+  async function postJsonForAudio(path, payload, timeoutMs) {
+    const response = await fetchWithTimeout(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, timeoutMs);
+
+    if (!response.ok) {
+      const message = await readErrorMessage(response, "音频生成失败。");
+      throw new Error(message);
+    }
+
+    return response.blob();
   }
 
   async function postForAudio(path, body, timeoutMs) {

@@ -13,6 +13,9 @@ logger = get_logger("model")
 MAGENTA_BASE_URL = os.getenv("MAGENTA_BASE_URL", "http://127.0.0.1:6006").rstrip("/")
 MAGENTA_TIMEOUT = float(os.getenv("MAGENTA_TIMEOUT", "600"))
 
+MUSICGEN_BASE_URL = os.getenv("MUSICGEN_BASE_URL", "http://127.0.0.1:6008").rstrip("/")
+MUSICGEN_TIMEOUT = float(os.getenv("MUSICGEN_TIMEOUT", "600"))
+
 
 def _raise_for_status(exc: HTTPError) -> None:
     error_body = exc.read().decode("utf-8", errors="replace")
@@ -152,3 +155,74 @@ def generate_audio(
 
     logger.info("[STEP] remote_magenta.completed bytes=%s", len(audio_data))
     return audio_data
+
+
+def _get_json_url(base_url: str, path: str, timeout: float) -> dict:
+    request = Request(
+        f"{base_url}{path}",
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _post_json_url(base_url: str, path: str, payload: dict, timeout: float) -> tuple[bytes, dict[str, str]]:
+    data = json.dumps(payload).encode("utf-8")
+    request = Request(
+        f"{base_url}{path}",
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "audio/wav,application/octet-stream,*/*",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            return response.read(), headers
+    except HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        logger.error(
+            "[ERROR] remote_musicgen.failed status=%s body=%s",
+            exc.code,
+            error_body[:1000],
+        )
+        raise RuntimeError(f"Remote MusicGen request failed with status {exc.code}") from exc
+
+
+def check_musicgen_health() -> dict:
+    return _get_json_url(MUSICGEN_BASE_URL, "/health", MUSICGEN_TIMEOUT)
+
+
+def generate_musicgen_audio(
+    *,
+    prompt: str,
+    duration: float = 5.0,
+    temperature: float = 1.0,
+    top_k: int = 250,
+    top_p: float = 0.0,
+    cfg_coef: float = 3.0,
+) -> tuple[bytes, dict[str, str]]:
+    payload = {
+        "prompt": prompt,
+        "duration": duration,
+        "temperature": temperature,
+        "top_k": top_k,
+        "top_p": top_p,
+        "cfg_coef": cfg_coef,
+    }
+    logger.info(
+        "[STEP] remote_musicgen.start prompt=%s duration=%s base_url=%s",
+        prompt,
+        duration,
+        MUSICGEN_BASE_URL,
+    )
+    audio_data, headers = _post_json_url(MUSICGEN_BASE_URL, "/generate", payload, MUSICGEN_TIMEOUT)
+    logger.info(
+        "[STEP] remote_musicgen.completed bytes=%s generation_seconds=%s",
+        len(audio_data),
+        headers.get("x-generation-seconds"),
+    )
+    return audio_data, headers

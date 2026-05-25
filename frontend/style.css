@@ -690,3 +690,24 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+.musicgen-card {
+  background: linear-gradient(180deg, rgba(246, 250, 252, 0.96), rgba(255, 251, 244, 0.92));
+  border-top: 4px solid rgba(31, 74, 122, 0.18);
+}
+
+.musicgen-parameter-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 980px) {
+  .musicgen-parameter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .musicgen-parameter-grid {
+    grid-template-columns: 1fr;
+  }
+}
